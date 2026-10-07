@@ -1,0 +1,139 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: install deps
+        run: |
+          grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+          pacman -Syu --noconfirm --needed \
+            base-devel meson ninja git sudo vulkan-headers wayland-protocols \
+            wayland libxcb libx11 vulkan-icd-loader \
+            lib32-wayland lib32-libxcb lib32-libx11 lib32-vulkan-icd-loader
+
+      - uses: actions/checkout@v4
+
+      - name: build .pkg.tar.zst
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+          cp packaging/PKGBUILD .
+          ver="${GITHUB_REF_NAME#v}"
+          [ -z "$ver" ] && ver="0.0.0"
+          sed -i "s/^pkgver=.*/pkgver=$ver/" PKGBUILD
+          sed -i 's|source=(.*)|source=()|' PKGBUILD
+          sed -i 's|sha256sums=(.*)|sha256sums=()|' PKGBUILD
+          sed -i 's|cd vkNemu-\$pkgver|cd "$startdir"|' PKGBUILD
+          sudo -u builder makepkg --noconfirm
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: '*.pkg.tar.zst'
+
+  debian:
+    runs-on: ubuntu-latest
+    container: debian:stable
+    steps:
+      - name: install deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            meson ninja-build gcc libc6-dev pkg-config dpkg-dev ca-certificates git \
+            libvulkan-dev libx11-dev libxcb1-dev libwayland-dev wayland-protocols
+
+      - uses: actions/checkout@v4
+
+      - name: build + package .deb
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          [ -z "$ver" ] && ver="0.0.0"
+          meson setup build --prefix=/usr --buildtype=release -Drelocatable_layer=true
+          ninja -C build
+          DESTDIR="$PWD/pkgroot" meson install -C build
+          mkdir -p pkgroot/DEBIAN
+          cat > pkgroot/DEBIAN/control <<EOF
+          Package: vknemu
+          Version: $ver
+          Section: graphics
+          Priority: optional
+          Architecture: amd64
+          Maintainer: vkNemu <noreply@github.com>
+          Depends: libwayland-client0, libxcb1, libc6
+          Description: input based idle frame limiter vulkan layer
+          EOF
+          dpkg-deb --build pkgroot "vknemu_${ver}_amd64.deb"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: '*.deb'
+
+  fedora:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: install deps
+        run: |
+          dnf install -y \
+            meson ninja-build gcc pkgconf-pkg-config rpm-build rpmdevtools git tar \
+            vulkan-loader-devel libX11-devel libxcb-devel wayland-devel wayland-protocols-devel
+
+      - uses: actions/checkout@v4
+
+      - name: build .rpm
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          [ -z "$ver" ] && ver="0.0.0"
+          rpmdev-setuptree
+          tar --exclude='./.git' --exclude='./build' --exclude='./builddir' --exclude='./builddir32' \
+              --transform "s,^\.,vknemu-${ver}," \
+              -czf ~/rpmbuild/SOURCES/vknemu-${ver}.tar.gz .
+          sed "s/__VERSION__/${ver}/g" packaging/vknemu.spec > ~/rpmbuild/SPECS/vknemu.spec
+          rpmbuild -bb ~/rpmbuild/SPECS/vknemu.spec
+          mv ~/rpmbuild/RPMS/x86_64/*.rpm .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: '*.rpm'
+
+  flatpak:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        branch: ['24.08', '25.08']
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install runtime + i386 build deps
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub \
+            org.freedesktop.Platform//${{ matrix.branch }} \
+            org.freedesktop.Sdk//${{ matrix.branch }} \
+            org.freedesktop.Sdk.Compat.i386//${{ matrix.branch }} \
+            org.freedesktop.Sdk.Extension.toolchain-i386//${{ matrix.branch }}
+
+      - name: build + bundle
+        run: |
+          sed -i "s/24\.08/${{ matrix.branch }}/g" \
+            packaging/flatpak/org.freedesktop.Platform.VulkanLayer.vkNemu.yml
+          flatpak-builder --user --disable-rofiles-fuse --force-clean --repo=repo build \
+            packaging/flatpak/org.freedesktop.Platform.VulkanLayer.vkNemu.yml
+          flatpak build-bundle --runtime repo "vkNemu-${{ matrix.branch }}.flatpak" \
+            org.freedesktop.Platform.VulkanLayer.vkNemu ${{ matrix.branch }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: '*.flatpak'

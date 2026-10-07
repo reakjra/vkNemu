@@ -1,0 +1,21 @@
+{
+    "file_format_version": "1.0.0",
+    "layer": {
+        "name": "VK_LAYER_vknemu_idle_limiter",
+        "type": "GLOBAL",
+        "library_path": "@LIBRARY_PATH@",
+        "api_version": "1.4.0",
+        "implementation_version": "1",
+        "description": "input based idle frame limiter vulkan layer",
+        "functions": {
+            "vkGetInstanceProcAddr": "vknemu_GetInstanceProcAddr",
+            "vkGetDeviceProcAddr": "vknemu_GetDeviceProcAddr"
+        },
+        "enable_environment": {
+            "VKNEMU": "1"
+        },
+        "disable_environment": {
+            "DISABLE_VKNEMU": "1"
+        }
+    }
+}
