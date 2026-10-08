@@ -139,16 +139,24 @@ static bool focus_lost(void) {
     return track_focus && !(x11_focus_is_focused() && wayland_focus_is_focused());
 }
 
+static bool keyboard_watched(void) {
+    return (sources & INPUT_KEYBOARD) && idle_notify_is_available();
+}
+
+static bool gamepad_watched(void) {
+    return (sources & INPUT_GAMEPAD) && gamepad_input_is_connected();
+}
+
 static bool keyboard_idle(void) {
-    return !(sources & INPUT_KEYBOARD) || (idle_notify_is_idle() && !x11_focus_input_held() && !wayland_focus_keys_held());
+    return !keyboard_watched() || (idle_notify_is_idle() && !x11_focus_input_held() && !wayland_focus_keys_held());
 }
 
 static bool gamepad_idle(void) {
-    return !(sources & INPUT_GAMEPAD) || gamepad_input_is_idle();
+    return !gamepad_watched() || gamepad_input_is_idle();
 }
 
 static bool should_limit(void) {
-    bool input_idle = sources != INPUT_NONE && keyboard_idle() && gamepad_idle();
+    bool input_idle = (keyboard_watched() || gamepad_watched()) && keyboard_idle() && gamepad_idle();
     return delay_elapsed() && (focus_lost() || input_idle);
 }
 

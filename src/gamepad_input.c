@@ -52,6 +52,7 @@ struct watcher {
 static struct watcher watcher = {.epoll_fd = -1, .inotify_fd = -1, .wake_fd = -1};
 static _Atomic uint64_t last_input_ns;
 static atomic_int held_inputs;
+static atomic_int connected;
 
 static bool test_bit(const unsigned long *bits, unsigned int bit) {
     return bits[bit / BITS_PER_LONG] >> (bit % BITS_PER_LONG) & 1;
@@ -110,6 +111,7 @@ static void close_gamepad(struct gamepad *pad) {
     for (struct gamepad **link = &watcher.gamepads; *link; link = &(*link)->next)
         if (*link == pad) {
             *link = pad->next;
+            atomic_fetch_sub(&connected, 1);
             break;
         }
 
@@ -145,6 +147,7 @@ static void open_gamepad(const char *node) {
 
     pad->next = watcher.gamepads;
     watcher.gamepads = pad;
+    atomic_fetch_add(&connected, 1);
 }
 
 static void scan_gamepads(void) {
@@ -262,6 +265,10 @@ void gamepad_input_start(double deadzone, uint64_t timeout_ns, int wake_fd) {
     pthread_t thread;
     if (pthread_create(&thread, NULL, watch_gamepads, NULL) == 0)
         pthread_detach(thread);
+}
+
+bool gamepad_input_is_connected(void) {
+    return atomic_load(&connected) > 0;
 }
 
 bool gamepad_input_is_idle(void) {
