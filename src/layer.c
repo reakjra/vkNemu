@@ -69,7 +69,9 @@ static struct dispatch_map instances = DISPATCH_MAP_INIT;
 static struct dispatch_map devices = DISPATCH_MAP_INIT;
 static struct pacer pacer;
 static pthread_once_t tracking_once = PTHREAD_ONCE_INIT;
+static pthread_once_t x11_input_once = PTHREAD_ONCE_INIT;
 static enum input_source sources;
+static uint64_t timeout_ns;
 static bool track_focus;
 static bool track_windows;
 static uint64_t delay_end_ns;
@@ -99,7 +101,7 @@ static enum input_source env_input_sources(void) {
 }
 
 static void start_tracking(void) {
-    double timeout = env_double("VKNEMU_TIMEOUT", 2, 0);
+    timeout_ns = (uint64_t)(env_double("VKNEMU_TIMEOUT", 2, 0) * NS_PER_SEC);
     delay_end_ns = monotonic_ns() + (uint64_t)(env_double("VKNEMU_DELAY", 0, 0) * NS_PER_SEC);
     sources = env_input_sources();
     track_focus = env_flag("VKNEMU_UNFOCUSED", true);
@@ -108,21 +110,25 @@ static void start_tracking(void) {
 
     pacer_set_fps(&pacer, env_double("VKNEMU_IDLE_FPS", 30, 1));
     if (sources & INPUT_KEYBOARD)
-        idle_notify_start((uint32_t)(timeout * 1000), wake_fd);
+        idle_notify_start((uint32_t)(timeout_ns / NS_PER_MS), wake_fd);
     if (sources & INPUT_GAMEPAD)
-        gamepad_input_start(env_double("VKNEMU_DEADZONE", 0.02, 0), (uint64_t)(timeout * NS_PER_SEC), wake_fd);
+        gamepad_input_start(env_double("VKNEMU_DEADZONE", 0.02, 0), timeout_ns, wake_fd);
     if (track_windows)
         x11_watch_start(wake_fd);
-    if (sources & INPUT_KEYBOARD)
-        x11_watch_start_input((uint64_t)(timeout * NS_PER_SEC));
 }
 
 static void ensure_tracking(void) {
     pthread_once(&tracking_once, start_tracking);
 }
 
+static void start_x11_input(void) {
+    x11_watch_start_input(timeout_ns);
+}
+
 static void track_x11_window(uint32_t window) {
     ensure_tracking();
+    if (sources & INPUT_KEYBOARD)
+        pthread_once(&x11_input_once, start_x11_input);
     if (track_windows)
         x11_watch_track(window);
 }

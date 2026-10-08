@@ -4,8 +4,8 @@ fps limiter vulkan layer based on input idling and/or window focus. Similar idea
 
 
 > [!WARNING]
-> Keyboard/Mouse idling only works if your compositor supports `ext_idle_notifier_v1` v2, otherwise you'll just get unfocus/gamepad support.
-> the cap on window unfocus is not supported in Gamescope.
+> Keyboard/Mouse idling for Wayland games only works if your compositor supports `ext_idle_notifier_v1` v2, otherwise you'll just get unfocus/gamepad support.
+> The cap on window unfocus is not supported in Gamescope.
 >
 > Also both X11/Wayland games are supported. 
 
