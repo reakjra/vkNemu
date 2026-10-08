@@ -98,5 +98,5 @@ bool idle_notify_is_available(void) {
 }
 
 bool idle_notify_is_idle(void) {
-    return atomic_load(&idle);
+    return !atomic_load(&available) || atomic_load(&idle);
 }

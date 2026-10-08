@@ -49,7 +49,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             meson ninja-build gcc libc6-dev pkg-config dpkg-dev ca-certificates git \
-            libvulkan-dev libx11-dev libxcb1-dev libwayland-dev wayland-protocols
+            libvulkan-dev libx11-dev libxcb1-dev libxcb-xinput-dev libwayland-dev wayland-protocols
 
       - uses: actions/checkout@v4
 
@@ -68,7 +68,7 @@ jobs:
           Priority: optional
           Architecture: amd64
           Maintainer: vkNemu <noreply@github.com>
-          Depends: libwayland-client0, libxcb1, libc6
+          Depends: libwayland-client0, libxcb1, libxcb-xinput0, libc6
           Description: input based idle frame limiter vulkan layer
           EOF
           dpkg-deb --build pkgroot "vknemu_${ver}_amd64.deb"

@@ -8,7 +8,7 @@
 #include "idle_notify.h"
 #include "pacer.h"
 #include "wayland_focus.h"
-#include "x11_focus.h"
+#include "x11_watch.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -112,7 +112,9 @@ static void start_tracking(void) {
     if (sources & INPUT_GAMEPAD)
         gamepad_input_start(env_double("VKNEMU_DEADZONE", 0.02, 0), (uint64_t)(timeout * NS_PER_SEC), wake_fd);
     if (track_windows)
-        x11_focus_start(wake_fd);
+        x11_watch_start(wake_fd);
+    if (sources & INPUT_KEYBOARD)
+        x11_watch_start_input((uint64_t)(timeout * NS_PER_SEC));
 }
 
 static void ensure_tracking(void) {
@@ -122,7 +124,7 @@ static void ensure_tracking(void) {
 static void track_x11_window(uint32_t window) {
     ensure_tracking();
     if (track_windows)
-        x11_focus_track(window);
+        x11_watch_track(window);
 }
 
 static void track_wayland_display(struct wl_display *display) {
@@ -136,11 +138,11 @@ static bool delay_elapsed(void) {
 }
 
 static bool focus_lost(void) {
-    return track_focus && !(x11_focus_is_focused() && wayland_focus_is_focused());
+    return track_focus && !(x11_watch_is_focused() && wayland_focus_is_focused());
 }
 
 static bool keyboard_watched(void) {
-    return (sources & INPUT_KEYBOARD) && idle_notify_is_available();
+    return (sources & INPUT_KEYBOARD) && (idle_notify_is_available() || x11_watch_input_is_available());
 }
 
 static bool gamepad_watched(void) {
@@ -148,7 +150,8 @@ static bool gamepad_watched(void) {
 }
 
 static bool keyboard_idle(void) {
-    return !keyboard_watched() || (idle_notify_is_idle() && !x11_focus_input_held() && !wayland_focus_keys_held());
+    return !keyboard_watched() ||
+           (idle_notify_is_idle() && x11_watch_input_is_idle() && !x11_watch_input_held() && !wayland_focus_keys_held());
 }
 
 static bool gamepad_idle(void) {

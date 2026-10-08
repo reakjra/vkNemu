@@ -1,6 +1,6 @@
 #include "gamepad_input.h"
 
-#include "clock.h"
+#include "activity.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <sys/eventfd.h>
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -45,12 +44,11 @@ struct watcher {
     int inotify_fd;
     int wake_fd;
     double deadzone;
-    uint64_t timeout_ns;
+    struct activity activity;
     struct gamepad *gamepads;
 };
 
 static struct watcher watcher = {.epoll_fd = -1, .inotify_fd = -1, .wake_fd = -1};
-static _Atomic uint64_t last_input_ns;
 static atomic_int held_inputs;
 static atomic_int connected;
 
@@ -182,10 +180,11 @@ static bool apply_key(struct gamepad *pad, const struct input_event *event) {
 
 static bool apply_axis(struct gamepad *pad, const struct input_event *event) {
     struct axis *axis = &pad->axes[event->code];
+    bool was_deflected = axis->deflected;
     bool deflected = abs(event->value - axis->rest) > axis->threshold;
-    update_held(pad, axis->deflected, deflected);
+    update_held(pad, was_deflected, deflected);
     axis->deflected = deflected;
-    return deflected;
+    return was_deflected || deflected;
 }
 
 static bool apply_event(struct gamepad *pad, const struct input_event *event) {
@@ -246,11 +245,8 @@ static void *watch_gamepads(void *) {
                 close_gamepad(pad);
         }
 
-        if (active) {
-            uint64_t now = monotonic_ns();
-            if (now - atomic_exchange(&last_input_ns, now) > watcher.timeout_ns)
-                eventfd_write(watcher.wake_fd, 1);
-        }
+        if (active)
+            activity_mark(&watcher.activity, watcher.wake_fd);
     }
 
     close_watcher();
@@ -259,7 +255,7 @@ static void *watch_gamepads(void *) {
 
 void gamepad_input_start(double deadzone, uint64_t timeout_ns, int wake_fd) {
     watcher.deadzone = deadzone;
-    watcher.timeout_ns = timeout_ns;
+    activity_start(&watcher.activity, timeout_ns);
     watcher.wake_fd = wake_fd;
 
     pthread_t thread;
@@ -272,5 +268,5 @@ bool gamepad_input_is_connected(void) {
 }
 
 bool gamepad_input_is_idle(void) {
-    return atomic_load(&held_inputs) == 0 && monotonic_ns() - atomic_load(&last_input_ns) > watcher.timeout_ns;
+    return atomic_load(&held_inputs) == 0 && activity_is_idle(&watcher.activity);
 }

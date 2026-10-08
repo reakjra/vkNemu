@@ -1,4 +1,6 @@
-#include "x11_focus.h"
+#include "x11_watch.h"
+
+#include "activity.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -6,21 +8,26 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <xcb/xcb.h>
+#include <xcb/xinput.h>
 
 #define MAX_ANCESTORS 16
 
-struct focus_tracker {
+struct x11_tracker {
     xcb_connection_t *connection;
     xcb_window_t root;
     xcb_atom_t active_atom;
+    bool watches_focus;
+    uint8_t xinput_opcode;
+    struct activity activity;
     xcb_window_t ancestors[MAX_ANCESTORS];
     size_t ancestor_count;
     int wake_fd;
 };
 
-static struct focus_tracker tracker = {.wake_fd = -1};
+static struct x11_tracker tracker = {.wake_fd = -1};
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_bool focused = true;
+static atomic_bool raw_input;
 
 static xcb_atom_t intern_atom(const char *name) {
     xcb_intern_atom_cookie_t cookie = xcb_intern_atom(tracker.connection, 1, strlen(name), name);
@@ -86,21 +93,30 @@ static bool is_active_window_change(const xcb_generic_event_t *event) {
            ((const xcb_property_notify_event_t *)event)->atom == tracker.active_atom;
 }
 
-static void *watch_focus(void *) {
+static bool is_raw_input(const xcb_generic_event_t *event) {
+    return (event->response_type & ~0x80) == XCB_GE_GENERIC &&
+           ((const xcb_ge_generic_event_t *)event)->extension == tracker.xinput_opcode;
+}
+
+static void *watch_events(void *) {
     xcb_generic_event_t *event;
     while ((event = xcb_wait_for_event(tracker.connection))) {
         bool changed = is_active_window_change(event);
+        bool input = is_raw_input(event);
         free(event);
         if (changed)
             refresh_focus();
+        if (input)
+            activity_mark(&tracker.activity, tracker.wake_fd);
     }
 
+    atomic_store(&raw_input, false);
     atomic_store(&focused, true);
     eventfd_write(tracker.wake_fd, 1);
     return NULL;
 }
 
-void x11_focus_start(int wake_fd) {
+void x11_watch_start(int wake_fd) {
     int screen;
     xcb_connection_t *connection = xcb_connect(NULL, &screen);
     if (xcb_connection_has_error(connection)) {
@@ -114,17 +130,53 @@ void x11_focus_start(int wake_fd) {
     tracker.active_atom = intern_atom("_NET_ACTIVE_WINDOW");
 
     pthread_t thread;
-    if (tracker.root == XCB_WINDOW_NONE || tracker.active_atom == XCB_ATOM_NONE || !watch_root_properties() ||
-        pthread_create(&thread, NULL, watch_focus, NULL) != 0) {
+    if (tracker.root == XCB_WINDOW_NONE || pthread_create(&thread, NULL, watch_events, NULL) != 0) {
         tracker.connection = NULL;
         xcb_disconnect(connection);
         return;
     }
     pthread_detach(thread);
+    tracker.watches_focus = tracker.active_atom != XCB_ATOM_NONE && watch_root_properties();
 }
 
-void x11_focus_track(uint32_t window) {
+static bool select_raw_input(void) {
+    struct {
+        xcb_input_event_mask_t head;
+        uint32_t bits;
+    } mask = {
+        .head = {.deviceid = XCB_INPUT_DEVICE_ALL_MASTER, .mask_len = 1},
+        .bits = XCB_INPUT_XI_EVENT_MASK_RAW_KEY_PRESS | XCB_INPUT_XI_EVENT_MASK_RAW_KEY_RELEASE |
+                XCB_INPUT_XI_EVENT_MASK_RAW_BUTTON_PRESS | XCB_INPUT_XI_EVENT_MASK_RAW_BUTTON_RELEASE |
+                XCB_INPUT_XI_EVENT_MASK_RAW_MOTION,
+    };
+    xcb_generic_error_t *error = xcb_request_check(
+        tracker.connection, xcb_input_xi_select_events_checked(tracker.connection, tracker.root, 1, &mask.head));
+    bool selected = !error;
+    free(error);
+    return selected;
+}
+
+// this is needed for gamescope since as usual it makes my life more joyful everytime i have to touch it.
+void x11_watch_start_input(uint64_t timeout_ns) {
     if (!tracker.connection)
+        return;
+
+    const xcb_query_extension_reply_t *xinput = xcb_get_extension_data(tracker.connection, &xcb_input_id);
+    if (!xinput || !xinput->present)
+        return;
+
+    xcb_input_xi_query_version_reply_t *version =
+        xcb_input_xi_query_version_reply(tracker.connection, xcb_input_xi_query_version(tracker.connection, 2, 1), NULL);
+    bool raw_always_delivered = version && version->major_version == 2 && version->minor_version >= 1;
+    free(version);
+
+    tracker.xinput_opcode = xinput->major_opcode;
+    activity_start(&tracker.activity, timeout_ns);
+    atomic_store(&raw_input, raw_always_delivered && select_raw_input());
+}
+
+void x11_watch_track(uint32_t window) {
+    if (!tracker.watches_focus)
         return;
 
     xcb_window_t ancestors[MAX_ANCESTORS];
@@ -141,8 +193,16 @@ void x11_focus_track(uint32_t window) {
     refresh_focus();
 }
 
-bool x11_focus_is_focused(void) {
+bool x11_watch_is_focused(void) {
     return atomic_load(&focused);
+}
+
+bool x11_watch_input_is_available(void) {
+    return atomic_load(&raw_input);
+}
+
+bool x11_watch_input_is_idle(void) {
+    return !atomic_load(&raw_input) || activity_is_idle(&tracker.activity);
 }
 
 static bool any_key_down(const xcb_query_keymap_reply_t *keymap) {
@@ -152,7 +212,7 @@ static bool any_key_down(const xcb_query_keymap_reply_t *keymap) {
     return false;
 }
 
-bool x11_focus_input_held(void) {
+bool x11_watch_input_held(void) {
     if (!tracker.connection)
         return false;
 
